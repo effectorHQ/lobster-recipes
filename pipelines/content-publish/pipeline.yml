@@ -1,0 +1,401 @@
+# Content Publishing Pipeline
+#
+# End-to-end content publishing workflow:
+# 1. Fetch draft from Notion workspace
+# 2. Spell check and grammar validation
+# 3. Generate social media snippets for Twitter/LinkedIn
+# 4. Schedule tweets via Twitter API
+# 5. Update CHANGELOG with published content reference
+# 6. Notify team on Slack with published links
+#
+# Triggered by: Manual invocation with content_url, scheduled batch publishing
+#
+# Demonstrates: document processing, content generation, scheduling,
+#               changelog management, multi-channel publishing
+
+name: content-publish
+description: End-to-end content publishing from Notion to social media
+version: "1.0.0"
+
+env:
+  CONTENT_URL: ${CONTENT_URL}           # Notion page URL or ID
+  CONTENT_TITLE: ${CONTENT_TITLE}       # Article title
+  PUBLISH_DATE: ${PUBLISH_DATE:-$(date +%Y-%m-%d)}
+  TWITTER_ACCOUNT: ${TWITTER_ACCOUNT:-openclawhq}
+  SLACK_CHANNEL: ${SLACK_CHANNEL:-#content}
+
+steps:
+  # Step 1: Fetch draft from Notion
+  # Demonstrates: document retrieval and parsing
+  - id: fetch-notion-draft
+    skill: notion
+    action: get-page
+    description: Retrieve draft content from Notion workspace
+    params:
+      pageUrl: "${CONTENT_URL}"
+      includeChildren: true
+      richText: true
+    timeout: 15
+
+  # Step 2: Extract and validate content
+  # Demonstrates: content transformation
+  - id: extract-content
+    skill: lobster
+    action: transform
+    description: Parse and structure content for publishing
+    params:
+      input: "${fetch-notion-draft.content}"
+      transformations:
+        - extractFrontmatter: true
+          fields:
+            - title
+            - description
+            - tags
+            - category
+            - author
+        - convertToMarkdown: true
+        - normalizeFormatting: true
+    timeout: 10
+
+  # Step 3: Spell check and grammar
+  # Demonstrates: content quality validation
+  - id: spell-check
+    skill: content-validator
+    action: validate
+    description: Run spell check and grammar validation
+    params:
+      text: "${extract-content.markdown}"
+      language: en-US
+      checks:
+        - spelling: true
+        - grammar: true
+        - readability: true
+        - styleGuide: "AP"
+      returnSuggestions: true
+    timeout: 30
+
+  # Step 4: Condition - if errors found, request approval
+  # Demonstrates: conditional error handling
+  - id: check-validation-errors
+    skill: lobster
+    action: eval
+    description: Determine if errors require manual review
+    params:
+      expr: "${spell-check.errorCount > 0}"
+    timeout: 5
+
+  # Step 5: Notify for manual review if needed
+  # Demonstrates: conditional Slack notification
+  - id: request-review
+    skill: slack
+    action: request-reaction
+    description: Ask team to review grammar/spelling issues
+    condition: "${check-validation-errors.result}"
+    params:
+      channel: "${SLACK_CHANNEL}"
+      message: |
+        📝 Content review needed
+
+        Document: ${CONTENT_TITLE}
+        Issues found: ${spell-check.errorCount}
+
+        Please review and react with ✅ to proceed or ❌ to request edits.
+
+        Link: ${CONTENT_URL}
+      requiredReaction: "white_check_mark"
+      timeout: 300
+    timeout: 320
+    skipIfConditionFalse: true
+
+  # Step 6: Apply corrections
+  # Demonstrates: conditional text transformation
+  - id: apply-corrections
+    skill: content-validator
+    action: apply-fixes
+    description: Auto-correct spelling and grammar issues
+    condition: "${check-validation-errors.result}"
+    params:
+      text: "${extract-content.markdown}"
+      suggestions: "${spell-check.suggestions}"
+      autoCorrect: minor  # Only obvious corrections
+    timeout: 15
+    skipIfConditionFalse: true
+
+  # Step 7: Generate social snippets
+  # Demonstrates: content generation for multiple platforms
+  - id: generate-snippets
+    skill: ai-content
+    action: summarize
+    description: Create platform-specific social media snippets
+    params:
+      input: "${check-validation-errors.result ? apply-corrections.corrected : extract-content.markdown}"
+      templates:
+        twitter:
+          length: 280
+          includeHashtags: true
+          includeLink: true
+          variants: 3
+        linkedin:
+          length: 3000
+          includeCallToAction: true
+          variants: 2
+        slack:
+          length: 500
+          includeEmoji: true
+    timeout: 30
+
+  # Step 8: Schedule tweets
+  # Demonstrates: external scheduling integration
+  - id: schedule-tweets
+    skill: twitter
+    action: schedule
+    description: Schedule tweets to Twitter account
+    params:
+      account: "${TWITTER_ACCOUNT}"
+      tweets: "${generate-snippets.twitter.variants}"
+      scheduleTime: |
+        [
+          "now() + 2h",
+          "now() + 24h",
+          "now() + 48h"
+        ]
+      hashtags: "${extract-content.frontmatter.tags}"
+    timeout: 20
+
+  # Step 9: Post to LinkedIn
+  # Demonstrates: LinkedIn integration
+  - id: post-linkedin
+    skill: linkedin
+    action: create-article
+    description: Publish article snippet to LinkedIn
+    params:
+      title: "${extract-content.frontmatter.title}"
+      description: "${extract-content.frontmatter.description}"
+      content: "${generate-snippets.linkedin.variants[0]}"
+      visibility: "PUBLIC"
+      tags: "${extract-content.frontmatter.tags}"
+    timeout: 20
+
+  # Step 10: Generate changelog entry
+  # Demonstrates: changelog management
+  - id: generate-changelog-entry
+    skill: lobster
+    action: compose
+    description: Create changelog entry for publication
+    params:
+      template: |
+        ## Published Content - ${PUBLISH_DATE}
+
+        **Title:** ${CONTENT_TITLE}
+        **Author:** ${extract-content.frontmatter.author}
+        **Category:** ${extract-content.frontmatter.category}
+
+        **Links:**
+        - Notion: [View Draft](${CONTENT_URL})
+        - Twitter: [View Tweets](https://twitter.com/${TWITTER_ACCOUNT}/search)
+        - LinkedIn: [View Article](${post-linkedin.url})
+
+        **Summary:** ${extract-content.frontmatter.description}
+
+        **Tags:** ${extract-content.frontmatter.tags | join:", "}
+
+        ---
+    timeout: 10
+
+  # Step 11: Update CHANGELOG.md
+  # Demonstrates: file system operations
+  - id: update-changelog
+    skill: file
+    action: prepend
+    description: Add publication to CHANGELOG
+    params:
+      path: "CHANGELOG.md"
+      content: "${generate-changelog-entry.output}"
+    timeout: 10
+    dependsOn:
+      - generate-changelog-entry
+
+  # Step 12: Post to Slack
+  # Demonstrates: rich notification with links
+  - id: post-slack-notification
+    skill: slack
+    action: send
+    description: Notify team of published content
+    params:
+      channel: "${SLACK_CHANNEL}"
+      blocks:
+        - type: header
+          text:
+            type: plain_text
+            text: "✨ Content Published"
+        - type: section
+          fields:
+            - type: mrkdwn
+              text: "*Title:*\n${CONTENT_TITLE}"
+            - type: mrkdwn
+              text: "*Date:*\n${PUBLISH_DATE}"
+            - type: mrkdwn
+              text: "*Category:*\n${extract-content.frontmatter.category}"
+            - type: mrkdwn
+              text: "*Author:*\n${extract-content.frontmatter.author}"
+        - type: section
+          text:
+            type: mrkdwn
+            text: "*Description:*\n${extract-content.frontmatter.description}"
+        - type: divider
+        - type: section
+          text:
+            type: mrkdwn
+            text: |
+              *Published Platforms:*
+              - 🐦 Twitter: ${schedule-tweets.tweetCount} tweets scheduled
+              - 💼 LinkedIn: [View Article](${post-linkedin.url})
+        - type: actions
+          elements:
+            - type: button
+              text: "View Notion"
+              url: "${CONTENT_URL}"
+            - type: button
+              text: "View Published"
+              url: "${post-linkedin.url}"
+            - type: button
+              text: "Share on Slack"
+              url: "slack://share?url=${post-linkedin.url}"
+      thread_ts: "${SLACK_THREAD_TS:-}"  # Continue thread if applicable
+    timeout: 15
+    dependsOn:
+      - schedule-tweets
+      - post-linkedin
+      - extract-content
+
+  # Step 13: Create social media metrics tracking
+  # Demonstrates: analytics setup
+  - id: setup-metrics-tracking
+    skill: analytics
+    action: create-campaign
+    description: Set up tracking for published content
+    params:
+      campaignName: "${CONTENT_TITLE}-${PUBLISH_DATE}"
+      channels:
+        - twitter
+        - linkedin
+      trackingParameters:
+        utm_source: social
+        utm_campaign: "${CONTENT_TITLE | slugify}"
+        utm_content: "${PUBLISH_DATE}"
+    timeout: 15
+
+  # Step 14: Generate summary report
+  # Demonstrates: report composition
+  - id: generate-report
+    skill: lobster
+    action: compose
+    description: Create publishing summary report
+    params:
+      template: |
+        # Content Publishing Report
+
+        **Date:** ${PUBLISH_DATE}
+        **Title:** ${CONTENT_TITLE}
+
+        ## Publication Summary
+
+        ✅ **Validation:** Spell check and grammar passed
+        ✅ **Twitter:** ${schedule-tweets.tweetCount} tweets scheduled
+        ✅ **LinkedIn:** Article published
+        ✅ **Changelog:** Updated
+        ✅ **Notifications:** Team notified
+
+        ## Publishing Details
+
+        **Social Media Coverage:**
+        - Twitter Posts: ${schedule-tweets.tweetCount}
+        - First Tweet Scheduled: Now
+        - LinkedIn Reach: Estimated ${post-linkedin.estimatedReach | default: "Unknown"}
+
+        **Links:**
+        - [Original Notion Draft](${CONTENT_URL})
+        - [LinkedIn Article](${post-linkedin.url})
+        - [Twitter Account](https://twitter.com/${TWITTER_ACCOUNT})
+
+        **Metrics Tracking:**
+        - Campaign ID: ${setup-metrics-tracking.campaignId}
+        - Analytics: [View Dashboard](${setup-metrics-tracking.dashboardUrl})
+
+        **Next Steps:**
+        1. Monitor social media engagement
+        2. Review analytics in 7 days
+        3. Share best performing content variants
+
+        ---
+        *Report auto-generated by Lobster Content Publishing Pipeline*
+    timeout: 10
+
+  # Step 15: Email report to stakeholders
+  # Demonstrates: email delivery
+  - id: email-report
+    skill: email
+    action: send
+    description: Send publishing report to content team
+    params:
+      to: "content-team@example.com"
+      cc:
+        - "marketing@example.com"
+      subject: "✨ Content Published: ${CONTENT_TITLE}"
+      htmlBody: "${generate-report.output | markdown-to-html}"
+      attachments:
+        - name: "social-snippets.json"
+          content: "${generate-snippets | to-json}"
+    timeout: 15
+    dependsOn:
+      - generate-report
+
+  # Step 16: Archive original draft
+  # Demonstrates: document lifecycle management
+  - id: archive-notion-draft
+    skill: notion
+    action: update-page
+    description: Mark draft as published in Notion
+    params:
+      pageUrl: "${CONTENT_URL}"
+      properties:
+        Status: "Published"
+        PublishedDate: "${PUBLISH_DATE}"
+        TwitterUrl: "${schedule-tweets.firstTweetUrl}"
+        LinkedInUrl: "${post-linkedin.url}"
+    timeout: 15
+
+# Error handling
+on_failure:
+  description: Handle publishing failures
+
+  steps:
+    - id: notify-failure
+      skill: slack
+      action: send
+      description: Alert team to publishing failure
+      params:
+        channel: "${SLACK_CHANNEL}"
+        message: |
+          ❌ Content publishing failed
+
+          Title: ${CONTENT_TITLE}
+          Failed Step: ${FAILED_STEP}
+          Error: ${FAILURE_REASON}
+
+          Please review the Notion draft and retry.
+          Link: ${CONTENT_URL}
+      timeout: 15
+
+config:
+  timeout: 600  # 10 minutes for full publishing workflow
+  maxConcurrentSteps: 3
+  resumable: true
+
+  cache:
+    enabled: true
+    ttl: 3600
+
+  logging:
+    level: info
+    captureStdout: true

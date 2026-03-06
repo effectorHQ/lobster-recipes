@@ -1,0 +1,350 @@
+# Daily Standup Pipeline
+#
+# This pipeline generates morning briefings for engineering teams:
+# 1. Fetch Jira issues assigned to current user (in progress / recent updates)
+# 2. Check GitHub PR status (open PRs, reviews needed, recent merges)
+# 3. Summarize unread Slack threads and mentions
+# 4. Compile morning briefing with actionable items
+# 5. Send via email and post to Slack
+#
+# Demonstrates: variable interpolation, data aggregation, email composition
+#
+# Environment Variables:
+#   - SLACK_CHANNEL: Slack channel for posting (default: #engineering)
+#   - JIRA_USER: Jira username (default: current user)
+#   - EMAIL_RECIPIENT: Email address for digest
+#   - GITHUB_ORG: GitHub organization
+#
+# Schedule: 08:00 UTC daily (via cron scheduler)
+
+name: daily-standup
+description: Morning briefing aggregating Jira, GitHub, and Slack updates
+version: "1.0.0"
+
+env:
+  SLACK_CHANNEL: ${SLACK_CHANNEL:-#engineering}
+  JIRA_USER: ${JIRA_USER:-current}
+  EMAIL_RECIPIENT: ${EMAIL_RECIPIENT:-engineering@example.com}
+  GITHUB_ORG: ${GITHUB_ORG:-myorg}
+  TODAY: $(date +%Y-%m-%d)
+  BRIEFING_HOUR: "08:00 UTC"
+
+steps:
+  # Step 1: Fetch Jira issues assigned to current user
+  # Demonstrates: external API integration, JQL queries, data filtering
+  - id: fetch-jira-issues
+    skill: jira
+    action: search
+    description: Retrieve in-progress and recently updated issues
+    params:
+      jql: |
+        assignee = "${JIRA_USER}"
+        AND (
+          status IN (
+            "In Progress",
+            "In Review",
+            "To Do"
+          )
+          OR updated >= -1d
+        )
+      maxResults: 20
+      fields:
+        - key
+        - summary
+        - status
+        - priority
+        - updated
+        - dueDate
+    timeout: 30
+
+  # Step 2: Fetch GitHub PR status
+  # Demonstrates: GitHub API integration, organization-wide queries
+  - id: fetch-github-prs
+    skill: github
+    action: search-prs
+    description: Find open PRs and reviews needed
+    params:
+      org: "${GITHUB_ORG}"
+      query: |
+        is:pr is:open
+        (
+          assignee:${GITHUB_USER}
+          OR author:${GITHUB_USER}
+          OR review-requested:${GITHUB_USER}
+        )
+      perPage: 20
+      sort: updated
+      direction: desc
+    timeout: 30
+
+  # Step 3: Get Slack thread summary
+  # Demonstrates: Slack API integration with filtering and summarization
+  - id: fetch-slack-threads
+    skill: slack
+    action: get-unread-threads
+    description: Retrieve unread messages and mentions
+    params:
+      channel: "${SLACK_CHANNEL}"
+      lookbackHours: 24
+      includeHighlights: true
+      includeDirectMentions: true
+    timeout: 30
+
+  # Step 4: Compile Jira summary
+  # Demonstrates: data transformation and formatting
+  - id: summarize-jira
+    skill: lobster
+    action: summarize
+    description: Create concise Jira issue summary with priorities
+    params:
+      input: "${fetch-jira-issues.data}"
+      template: |
+        ## Jira Issues (${fetch-jira-issues.data.total} items)
+
+        {% for issue in fetch-jira-issues.data.issues %}
+        - **[{{ issue.key }}](https://jira.example.com/browse/{{ issue.key }}): {{ issue.summary }}**
+          - Status: {{ issue.status }}
+          - Priority: {{ issue.priority }}
+          - Updated: {{ issue.updated | date:"2 days ago" }}
+          {% if issue.dueDate %}
+          - Due: {{ issue.dueDate }}
+          {% endif %}
+        {% endfor %}
+
+        {% if fetch-jira-issues.data.overdue %}
+        ⚠️  {{ fetch-jira-issues.data.overdue }} items overdue
+        {% endif %}
+      maxLength: 1000
+    timeout: 15
+
+  # Step 5: Compile GitHub summary
+  # Demonstrates: conditional data formatting based on PR status
+  - id: summarize-github
+    skill: lobster
+    action: summarize
+    description: Create GitHub PR summary with action items
+    params:
+      input: "${fetch-github-prs.data}"
+      template: |
+        ## GitHub PRs (${fetch-github-prs.data.total} items)
+
+        {% assign assigned = fetch-github-prs.data.prs | where:"assignee",GITHUB_USER %}
+        {% assign authored = fetch-github-prs.data.prs | where:"author",GITHUB_USER %}
+        {% assign reviews = fetch-github-prs.data.prs | where:"reviewRequested",true %}
+
+        **Assigned to You:** {{ assigned.size }}
+        {% for pr in assigned %}
+        - [{{ pr.title }}]({{ pr.url }}) - {{ pr.repo }}
+          - Status: {{ pr.status }} | Comments: {{ pr.commentCount }}
+        {% endfor %}
+
+        **Your PRs (Awaiting Review):** {{ authored.size }}
+        {% for pr in authored %}
+        - [{{ pr.title }}]({{ pr.url }}) - {{ pr.repo }}
+          - Status: {{ pr.status }} | Reviews: {{ pr.reviewsNeeded }}
+        {% endfor %}
+
+        **Reviews Requested:** {{ reviews.size }}
+        {% for pr in reviews %}
+        - [{{ pr.title }}]({{ pr.url }}) - {{ pr.author }}
+        {% endfor %}
+      maxLength: 1000
+    timeout: 15
+
+  # Step 6: Compile Slack summary
+  # Demonstrates: conversation filtering and thread extraction
+  - id: summarize-slack
+    skill: lobster
+    action: summarize
+    description: Highlight key Slack discussions and mentions
+    params:
+      input: "${fetch-slack-threads.data}"
+      template: |
+        ## Slack Updates (Last 24h)
+
+        {% if fetch-slack-threads.data.mentions %}
+        **Direct Mentions:** {{ fetch-slack-threads.data.mentions | size }}
+        {% for mention in fetch-slack-threads.data.mentions %}
+        - <@{{ mention.user }}> in #{{ mention.channel }}: "{{ mention.text | truncate: 80 }}"
+        {% endfor %}
+        {% endif %}
+
+        {% if fetch-slack-threads.data.threads %}
+        **Important Threads:**
+        {% for thread in fetch-slack-threads.data.threads limit: 5 %}
+        - #{{ thread.channel }}: {{ thread.topic }} ({{ thread.replies }} replies)
+        {% endfor %}
+        {% endif %}
+
+        {% if fetch-slack-threads.data.mentions == blank and fetch-slack-threads.data.threads == blank %}
+        ✅ No important updates or mentions
+        {% endif %}
+      maxLength: 800
+    timeout: 15
+
+  # Step 7: Compose full briefing email
+  # Demonstrates: email composition with multiple data sources
+  - id: compose-briefing
+    skill: email
+    action: compose
+    description: Create morning briefing email with all aggregated data
+    params:
+      to: "${EMAIL_RECIPIENT}"
+      cc:
+        - team-lead@example.com
+      subject: "☀️ Engineering Standup - ${TODAY}"
+      htmlTemplate: |
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+            .section { margin: 20px 0; padding: 15px; border-left: 4px solid #0066cc; }
+            .section h2 { margin: 0 0 10px 0; color: #003d99; }
+            .priority-high { color: #d32f2f; }
+            .priority-medium { color: #f57c00; }
+            .priority-low { color: #388e3c; }
+            a { color: #0066cc; }
+          </style>
+        </head>
+        <body>
+          <h1>Good morning, team! 👋</h1>
+          <p>Here's your ${BRIEFING_HOUR} standup briefing for ${TODAY}:</p>
+
+          <div class="section">
+            ${summarize-jira.output}
+          </div>
+
+          <div class="section">
+            ${summarize-github.output}
+          </div>
+
+          <div class="section">
+            ${summarize-slack.output}
+          </div>
+
+          <hr style="margin: 30px 0;">
+          <p style="color: #666; font-size: 12px;">
+            Generated by Lobster •
+            <a href="https://jira.example.com/issues/">View all Jira issues</a> •
+            <a href="https://github.com/${GITHUB_ORG}/pulls">View all PRs</a>
+          </p>
+        </body>
+        </html>
+    timeout: 30
+    dependsOn:
+      - summarize-jira
+      - summarize-github
+      - summarize-slack
+
+  # Step 8: Send email
+  # Demonstrates: sending composed email
+  - id: send-email
+    skill: email
+    action: send
+    description: Deliver briefing to team inbox
+    params:
+      email: "${compose-briefing.id}"
+    timeout: 10
+    dependsOn:
+      - compose-briefing
+
+  # Step 9: Post to Slack
+  # Demonstrates: rich Slack formatting with blocks
+  - id: post-slack
+    skill: slack
+    action: send
+    description: Post briefing summary to Slack channel
+    params:
+      channel: "${SLACK_CHANNEL}"
+      blocks:
+        - type: header
+          text:
+            type: plain_text
+            text: "☀️ Engineering Standup - ${TODAY}"
+        - type: section
+          text:
+            type: mrkdwn
+            text: "${summarize-jira.output}"
+        - type: divider
+        - type: section
+          text:
+            type: mrkdwn
+            text: "${summarize-github.output}"
+        - type: divider
+        - type: section
+          text:
+            type: mrkdwn
+            text: "${summarize-slack.output}"
+        - type: context
+          elements:
+            - type: mrkdwn
+              text: "💡 *Have updates to share?* Reply in thread or post your standup note"
+    timeout: 30
+    dependsOn:
+      - summarize-jira
+      - summarize-github
+      - summarize-slack
+
+  # Step 10: Log briefing metadata
+  # Demonstrates: logging and analytics
+  - id: log-briefing
+    skill: logging
+    action: log
+    description: Record briefing generation metrics
+    params:
+      level: info
+      message: "Daily standup generated"
+      data:
+        jiraIssueCount: "${fetch-jira-issues.data.total}"
+        githubPRCount: "${fetch-github-prs.data.total}"
+        slackMentions: "${fetch-slack-threads.data.mentions | size}"
+        generatedAt: "${TODAY} ${BRIEFING_HOUR}"
+        recipientEmail: "${EMAIL_RECIPIENT}"
+    timeout: 10
+    dependsOn:
+      - send-email
+      - post-slack
+
+# Error handling for data fetch failures
+on_failure:
+  description: Handle data fetch failures gracefully
+
+  steps:
+    - id: notify-failure
+      skill: slack
+      action: send
+      description: Notify team of briefing generation failure
+      params:
+        channel: "${SLACK_CHANNEL}"
+        message: |
+          ⚠️ Daily standup generation failed
+
+          Failed step: ${FAILED_STEP}
+          Error: ${FAILURE_REASON}
+
+          Team, please check your Jira, GitHub, and Slack manually today.
+      timeout: 15
+
+config:
+  timeout: 600  # 10 minutes total for all data fetching and composition
+  maxConcurrentSteps: 3
+  resumable: true
+
+  cache:
+    enabled: true
+    ttl: 3600  # Cache for 1 hour to avoid repeated API calls
+
+  logging:
+    level: info
+    captureStdout: true
+
+# Scheduler configuration
+scheduler:
+  # Run daily at 8:00 AM UTC
+  cron: "0 8 * * *"
+  timezone: UTC
+  # Or use alternative:
+  # schedule: "0 8 * * MON-FRI"  # Weekdays only
+  retryOnFailure: true
+  retryDelayMinutes: 15

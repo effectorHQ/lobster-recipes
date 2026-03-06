@@ -1,0 +1,355 @@
+# PR Review Triage Pipeline
+#
+# Automated PR quality assurance and routing workflow:
+# 1. Check if SKILL.md file was changed → run skill-lint validation
+# 2. Run automated tests (unit, integration, linting)
+# 3. Analyze code metrics (size, complexity, test coverage)
+# 4. Classify PR by risk and size (small/medium/large, low/medium/high risk)
+# 5. Auto-assign reviewer based on expertise and workload
+# 6. Post comprehensive summary comment with recommendations
+#
+# Triggered by: GitHub webhook on pull_request:opened or pull_request:synchronize
+#
+# Demonstrates: conditional steps, skill-lint integration, code classification,
+#               risk assessment, reviewer routing, rich PR comments
+
+name: pr-review-triage
+description: Automated PR validation, classification, and reviewer assignment
+version: "1.0.0"
+
+env:
+  REPO_OWNER: ${GITHUB_REPO_OWNER}
+  REPO_NAME: ${GITHUB_REPO_NAME}
+  PR_NUMBER: ${GITHUB_PR_NUMBER}
+  PR_AUTHOR: ${GITHUB_PR_AUTHOR}
+  BRANCH: ${GITHUB_BRANCH}
+
+steps:
+  # Step 1: Check if SKILL.md was modified
+  # Demonstrates: conditional check on file changes
+  - id: check-skill-changes
+    skill: github
+    action: get-diff-files
+    description: Detect if SKILL.md or skill definition changed
+    params:
+      owner: "${REPO_OWNER}"
+      repo: "${REPO_NAME}"
+      prNumber: "${PR_NUMBER}"
+      filterPatterns:
+        - "SKILL.md"
+        - "skill.*.json"
+        - "skill.*.yaml"
+    timeout: 15
+
+  # Step 2: Validate SKILL.md if changed
+  # Demonstrates: conditional step execution based on previous step result
+  - id: validate-skill
+    skill: skill-lint
+    action: validate
+    description: Lint skill definition for correctness
+    # Only run if SKILL.md was changed
+    condition: "${check-skill-changes.hasMatches}"
+    params:
+      file: "SKILL.md"
+      strict: true
+      checks:
+        - metadata
+        - parameters
+        - examples
+        - documentation
+    timeout: 30
+    skipIfConditionFalse: true
+
+  # Step 3: Run test suite
+  # Demonstrates: command execution with environment setup
+  - id: run-tests
+    skill: shell
+    action: exec
+    description: Execute automated test suite
+    params:
+      command: |
+        #!/bin/bash
+        set -e
+        echo "Installing dependencies..."
+        npm ci
+
+        echo "Running unit tests..."
+        npm run test:unit -- --coverage --json --outputFile=coverage.json
+
+        echo "Running integration tests..."
+        npm run test:integration || true
+
+        echo "Running linter..."
+        npm run lint -- --format json --output-file=lint-report.json || true
+      timeout: 600
+      env:
+        CI: "true"
+        NODE_ENV: test
+        COVERAGE_THRESHOLD: "80"
+
+  # Step 4: Analyze code metrics
+  # Demonstrates: code analysis and metrics extraction
+  - id: analyze-metrics
+    skill: code-analyzer
+    action: analyze
+    description: Extract code metrics and complexity scores
+    params:
+      branch: "${BRANCH}"
+      baseBranch: main
+      metrics:
+        - cyclomatic_complexity
+        - maintainability_index
+        - lines_of_code_changed
+        - test_coverage
+        - code_duplication
+      outputFormat: json
+    timeout: 60
+
+  # Step 5: Classify PR by size and risk
+  # Demonstrates: data-driven classification logic
+  - id: classify-pr
+    skill: lobster
+    action: evaluate
+    description: Determine PR size and risk classification
+    params:
+      input:
+        metrics: "${analyze-metrics.output}"
+        testResults: "${run-tests.output}"
+        skillChanges: "${check-skill-changes.hasMatches}"
+      logic: |
+        // Determine size
+        let size = "small";
+        if (metrics.lines_of_code_changed > 500) size = "large";
+        else if (metrics.lines_of_code_changed > 200) size = "medium";
+
+        // Determine risk
+        let risk = "low";
+        let riskFactors = 0;
+
+        if (metrics.cyclomatic_complexity > 10) riskFactors++;
+        if (metrics.test_coverage < 0.8) riskFactors++;
+        if (skillChanges) riskFactors++;
+        if (!testResults.allTestsPassed) riskFactors++;
+        if (metrics.code_duplication > 0.1) riskFactors++;
+
+        if (riskFactors >= 3) risk = "high";
+        else if (riskFactors >= 1) risk = "medium";
+
+        return {
+          size: size,
+          risk: risk,
+          riskScore: riskFactors / 5,  // Normalized 0-1
+          requiresSecurityReview: skillChanges && risk !== "low",
+          requiresArchitectureReview: size === "large" && risk === "high"
+        };
+    timeout: 30
+    dependsOn:
+      - analyze-metrics
+      - run-tests
+      - check-skill-changes
+
+  # Step 6: Determine required reviewers
+  # Demonstrates: reviewer routing based on expertise
+  - id: assign-reviewers
+    skill: github
+    action: get-codeowners
+    description: Identify appropriate reviewers based on code changes
+    params:
+      owner: "${REPO_OWNER}"
+      repo: "${REPO_NAME}"
+      files: "${analyze-metrics.changedFiles}"
+      preferences:
+        - considerWorkload: true
+          maxPRsPerReviewer: 5
+        - considerExpertise: true
+          expertiseRequired:
+            - "skill-lint": "${check-skill-changes.hasMatches}"
+            - "backend": "${analyze-metrics.backendChanges}"
+            - "frontend": "${analyze-metrics.frontendChanges}"
+    timeout: 15
+
+  # Step 7: Generate comprehensive summary
+  # Demonstrates: rich comment composition with metrics and recommendations
+  - id: generate-summary
+    skill: lobster
+    action: compose
+    description: Create detailed PR summary comment
+    params:
+      template: |
+        ## 🤖 Automated PR Review
+
+        ### Classification
+        **Size:** {% if classify-pr.size == "large" %}🔴{% elsif classify-pr.size == "medium" %}🟡{% else %}🟢{% endif %} {{ classify-pr.size | upcase }}
+        **Risk:** {% if classify-pr.risk == "high" %}🔴{% elsif classify-pr.risk == "medium" %}🟡{% else %}🟢{% endif %} {{ classify-pr.risk | upcase }}
+
+        ### Quality Metrics
+        | Metric | Value | Status |
+        |--------|-------|--------|
+        | Lines Changed | {{ analyze-metrics.linesOfCodeChanged }} | {{ analyze-metrics.linesOfCodeChanged > 500 ? "⚠️ Large" : "✅" }} |
+        | Test Coverage | {{ analyze-metrics.testCoverage | percent }} | {% if analyze-metrics.testCoverage >= 0.80 %}✅{% else %}❌{% endif %} |
+        | Complexity | {{ analyze-metrics.cyclomaticComplexity }} | {% if analyze-metrics.cyclomaticComplexity <= 10 %}✅{% else %}⚠️{% endif %} |
+        | Duplication | {{ analyze-metrics.codeDuplication | percent }} | {% if analyze-metrics.codeDuplication < 0.10 %}✅{% else %}⚠️{% endif %} |
+
+        ### Test Results
+        - {% if run-tests.unitTestsPassed %}✅ Unit Tests PASSED{% else %}❌ Unit Tests FAILED{% endif %}
+        - {% if run-tests.integrationTestsPassed %}✅ Integration Tests PASSED{% else %}⚠️ Integration Tests SKIPPED{% endif %}
+        - {% if run-tests.lintChecksPassed %}✅ Lint Checks PASSED{% else %}❌ Lint Issues Found{% endif %}
+
+        {% if check-skill-changes.hasMatches %}
+        ### ⚡ Skill Definition Changes Detected
+        - SKILL.md or skill configuration was modified
+        {% if validate-skill.valid %}
+        - ✅ Skill definition is valid
+        {% else %}
+        - ❌ Skill definition has validation errors:
+          ```
+          {{ validate-skill.errors }}
+          ```
+        {% endif %}
+        - 🔍 Requires skill-lint review
+        {% endif %}
+
+        ### Recommendations
+        {% if classify-pr.requiresArchitectureReview %}
+        - 🏗️ **Architecture Review Required** — Large change with high complexity
+        {% endif %}
+        {% if classify-pr.requiresSecurityReview %}
+        - 🔒 **Security Review Recommended** — Changes to sensitive code paths
+        {% endif %}
+        {% if analyze-metrics.testCoverage < 0.80 %}
+        - 📊 **Improve Test Coverage** — Current coverage {{ analyze-metrics.testCoverage | percent }}, target 80%+
+        {% endif %}
+        {% if analyze-metrics.cyclomaticComplexity > 10 %}
+        - 🧩 **Refactor Complex Code** — Consider breaking down complex functions
+        {% endif %}
+
+        ### Suggested Reviewers
+        {% for reviewer in assign-reviewers.reviewers %}
+        - @{{ reviewer.username }} ({{ reviewer.relevantFiles | size }} files)
+        {% endfor %}
+
+        ---
+        *This comment was automatically generated by Lobster. Review the recommendations and request changes if needed.*
+    timeout: 15
+    dependsOn:
+      - classify-pr
+      - analyze-metrics
+      - run-tests
+      - check-skill-changes
+      - assign-reviewers
+
+  # Step 8: Post summary comment to PR
+  # Demonstrates: GitHub PR commenting
+  - id: post-comment
+    skill: github
+    action: create-comment
+    description: Post comprehensive summary to pull request
+    params:
+      owner: "${REPO_OWNER}"
+      repo: "${REPO_NAME}"
+      prNumber: "${PR_NUMBER}"
+      body: "${generate-summary.output}"
+    timeout: 15
+    dependsOn:
+      - generate-summary
+
+  # Step 9: Assign reviewers
+  # Demonstrates: GitHub PR reviewer assignment
+  - id: assign-pr-reviewers
+    skill: github
+    action: request-reviewers
+    description: Request reviews from appropriate team members
+    params:
+      owner: "${REPO_OWNER}"
+      repo: "${REPO_NAME}"
+      prNumber: "${PR_NUMBER}"
+      reviewers: "${assign-reviewers.reviewerUsernames}"
+      teamReviewers:
+        - security-team
+        - "${classify-pr.requiresArchitectureReview ? 'architecture-team' : ''}"
+    timeout: 15
+    dependsOn:
+      - assign-reviewers
+      - classify-pr
+
+  # Step 10: Apply labels based on classification
+  # Demonstrates: GitHub label management
+  - id: apply-labels
+    skill: github
+    action: add-labels
+    description: Tag PR with size and risk indicators
+    params:
+      owner: "${REPO_OWNER}"
+      repo: "${REPO_NAME}"
+      prNumber: "${PR_NUMBER}"
+      labels:
+        - "size/{{ classify-pr.size }}"
+        - "risk/{{ classify-pr.risk }}"
+        - "{{ check-skill-changes.hasMatches ? 'skill-changed' : '' }}"
+        - "{{ analyze-metrics.testCoverage < 0.80 ? 'low-coverage' : '' }}"
+        - "{{ classify-pr.requiresArchitectureReview ? 'needs-architecture-review' : '' }}"
+    timeout: 15
+    dependsOn:
+      - classify-pr
+      - check-skill-changes
+      - analyze-metrics
+
+  # Step 11: Log results for analytics
+  # Demonstrates: pipeline telemetry
+  - id: log-results
+    skill: logging
+    action: log
+    description: Record PR review metrics for team analytics
+    params:
+      level: info
+      message: "PR review triage completed"
+      data:
+        prNumber: "${PR_NUMBER}"
+        author: "${PR_AUTHOR}"
+        size: "${classify-pr.size}"
+        risk: "${classify-pr.risk}"
+        testsPassed: "${run-tests.allTestsPassed}"
+        coverage: "${analyze-metrics.testCoverage}"
+        skillChanges: "${check-skill-changes.hasMatches}"
+        reviewersAssigned: "${assign-reviewers.reviewerCount}"
+    timeout: 10
+    dependsOn:
+      - post-comment
+      - assign-pr-reviewers
+
+# Error handling
+on_failure:
+  description: Handle triage failures gracefully
+
+  steps:
+    - id: notify-failure
+      skill: github
+      action: create-comment
+      description: Post error comment to PR
+      params:
+        owner: "${REPO_OWNER}"
+        repo: "${REPO_NAME}"
+        prNumber: "${PR_NUMBER}"
+        body: |
+          ⚠️ **Automated Review Error**
+
+          The automated PR review process encountered an error at step `${FAILED_STEP}`:
+          ```
+          ${FAILURE_REASON}
+          ```
+
+          Please review manually or contact the DevOps team.
+      timeout: 15
+
+config:
+  timeout: 900  # 15 minutes total
+  maxConcurrentSteps: 3
+  resumable: true
+
+  cache:
+    enabled: true
+    ttl: 3600
+
+  logging:
+    level: info
+    captureStdout: true

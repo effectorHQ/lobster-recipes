@@ -1,0 +1,453 @@
+# Incident Response Pipeline
+#
+# Automated incident handling and diagnostics workflow:
+# 1. Check service health across all endpoints
+# 2. Retrieve recent logs for affected services
+# 3. Pull recent deployments to identify potential causes
+# 4. Create Jira incident ticket with diagnostics
+# 5. Notify on-call engineer via Slack with context
+# 6. Start timeline document in Notion for incident tracking
+# 7. Monitor metrics and gather additional diagnostics as needed
+#
+# Triggered by: Manual invocation or automated alerting (Prometheus, CloudWatch, etc.)
+#
+# Demonstrates: parallel execution, conditional steps, error handling,
+#               external integrations, incident management workflow
+
+name: incident-response
+description: Automated incident handling with diagnostics and team notification
+version: "1.0.0"
+
+env:
+  SERVICE_NAME: ${SERVICE_NAME:-api-service}
+  ENVIRONMENT: ${ENVIRONMENT:-production}
+  SEVERITY: ${SEVERITY:-medium}  # low, medium, high, critical
+  TRIGGERED_BY: ${TRIGGERED_BY:-manual}
+  INCIDENT_ID: ${INCIDENT_ID:-$(date +%s)}
+
+steps:
+  # Step 1: Check service health endpoints
+  # Demonstrates: parallel health checks with timeouts
+  - id: check-api-health
+    skill: http
+    action: get
+    description: Check API service health
+    params:
+      url: "https://${ENVIRONMENT}-api.example.com/health"
+      expectedStatus: 200
+      timeout: 5
+    timeout: 10
+
+  - id: check-database-health
+    skill: database
+    action: ping
+    description: Verify database connectivity
+    params:
+      host: "${ENVIRONMENT}-db.example.com"
+      timeout: 5
+    timeout: 10
+
+  - id: check-cache-health
+    skill: cache
+    action: ping
+    description: Verify Redis cache health
+    params:
+      host: "${ENVIRONMENT}-cache.example.com"
+      timeout: 5
+    timeout: 10
+
+  # Step 2: Gather system metrics
+  # Demonstrates: metrics collection from multiple sources
+  - id: gather-metrics
+    skill: prometheus
+    action: query
+    description: Collect recent system metrics
+    params:
+      queries:
+        cpu_usage: 'rate(cpu_usage_seconds_total[5m])'
+        memory_usage: 'memory_usage_bytes / 1024 / 1024'
+        error_rate: 'rate(http_requests_total{status=~"5.."}[5m])'
+        latency_p95: 'histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))'
+        active_connections: 'active_connections'
+      timeRange: "1h"
+    timeout: 15
+
+  # Step 3: Pull recent logs
+  # Demonstrates: log aggregation from multiple sources
+  - id: get-application-logs
+    skill: logging
+    action: query
+    description: Retrieve recent application error logs
+    params:
+      source: "application"
+      service: "${SERVICE_NAME}"
+      environment: "${ENVIRONMENT}"
+      filter: 'level:"ERROR" OR level:"CRITICAL"'
+      limit: 100
+      timeRange: "30m"
+    timeout: 20
+
+  - id: get-infrastructure-logs
+    skill: logging
+    action: query
+    description: Retrieve infrastructure and deployment logs
+    params:
+      source: "infrastructure"
+      service: "${SERVICE_NAME}"
+      environment: "${ENVIRONMENT}"
+      filter: 'type:"deployment" OR type:"crash" OR type:"restart"'
+      limit: 50
+      timeRange: "1h"
+    timeout: 20
+
+  # Step 4: Fetch recent deployments
+  # Demonstrates: deployment history analysis
+  - id: get-recent-deployments
+    skill: github
+    action: list-deployments
+    description: Check recent deployments to identify potential causes
+    params:
+      owner: myorg
+      repo: "${SERVICE_NAME}"
+      environment: "${ENVIRONMENT}"
+      limit: 5
+      fields:
+        - ref
+        - createdAt
+        - status
+        - creator
+        - statuses
+    timeout: 15
+
+  # Step 5: Check container status
+  # Demonstrates: Kubernetes diagnostics
+  - id: check-pod-status
+    skill: kubernetes
+    action: get
+    description: Inspect Kubernetes pods for crashes or restarts
+    params:
+      resource: pods
+      namespace: "${ENVIRONMENT}"
+      selector: "app=${SERVICE_NAME}"
+      fields:
+        - name
+        - status.phase
+        - status.containerStatuses[*].restartCount
+        - metadata.creationTimestamp
+    timeout: 15
+
+  # Step 6: Analyze root cause
+  # Demonstrates: intelligent analysis of collected data
+  - id: analyze-incident
+    skill: lobster
+    action: evaluate
+    description: Analyze symptoms and identify likely root cause
+    params:
+      input:
+        apiHealth: "${check-api-health.status}"
+        dbHealth: "${check-database-health.status}"
+        cacheHealth: "${check-cache-health.status}"
+        metrics: "${gather-metrics.output}"
+        appLogs: "${get-application-logs.output}"
+        infraLogs: "${get-infrastructure-logs.output}"
+        deployments: "${get-recent-deployments.output}"
+        pods: "${check-pod-status.output}"
+      logic: |
+        let rootCause = "unknown";
+        let severity = "${SEVERITY}";
+        let affectedComponents = [];
+
+        // Database issue
+        if (dbHealth !== "healthy") {
+          rootCause = "database connectivity";
+          affectedComponents.push("database");
+        }
+
+        // Cache issue
+        if (cacheHealth !== "healthy" && dbHealth === "healthy") {
+          rootCause = "cache service degradation";
+          affectedComponents.push("cache");
+        }
+
+        // High error rate without infrastructure issues
+        if (metrics.error_rate > 0.05 && dbHealth === "healthy") {
+          rootCause = "application error rate spike";
+          affectedComponents.push("application");
+        }
+
+        // Recent deployment correlation
+        let latestDeploy = deployments[0];
+        if (latestDeploy && (latestDeploy.createdAt > nowMinusMinutes(30))) {
+          if (latestDeploy.status === "SUCCESS") {
+            rootCause = "recent deployment side effect";
+          } else if (latestDeploy.status === "FAILED") {
+            rootCause = "failed deployment rollback";
+          }
+        }
+
+        // Pod restart spike
+        if (pods.some(p => p.restartCount > 5)) {
+          rootCause = "container crashes / pod instability";
+          affectedComponents.push("pods");
+        }
+
+        return {
+          rootCause: rootCause,
+          severity: severity,
+          affectedComponents: affectedComponents,
+          errorRate: metrics.error_rate,
+          latencyP95: metrics.latency_p95,
+          recommendedAction: getAction(rootCause)
+        };
+    timeout: 15
+    dependsOn:
+      - check-api-health
+      - check-database-health
+      - check-cache-health
+      - gather-metrics
+      - get-application-logs
+      - get-recent-deployments
+      - check-pod-status
+
+  # Step 7: Create Jira incident ticket
+  # Demonstrates: incident tracking integration
+  - id: create-jira-ticket
+    skill: jira
+    action: create-issue
+    description: Create incident ticket with diagnostics
+    params:
+      projectKey: OPS
+      issueType: Incident
+      summary: "[${SEVERITY}] ${SERVICE_NAME} incident at ${INCIDENT_ID}"
+      description: |
+        # Service Incident Report
+
+        **Service:** ${SERVICE_NAME}
+        **Environment:** ${ENVIRONMENT}
+        **Incident ID:** ${INCIDENT_ID}
+        **Severity:** ${SEVERITY}
+        **Triggered:** ${TRIGGERED_BY}
+
+        ## Health Status
+        - API: ${check-api-health.status}
+        - Database: ${check-database-health.status}
+        - Cache: ${check-cache-health.status}
+
+        ## Root Cause Analysis
+        **Probable Cause:** ${analyze-incident.rootCause}
+        **Affected Components:** ${analyze-incident.affectedComponents}
+
+        ## Metrics
+        - Error Rate (5m): ${analyze-incident.errorRate}
+        - Latency P95: ${analyze-incident.latencyP95}
+        - CPU Usage: ${gather-metrics.cpu_usage}
+        - Memory Usage: ${gather-metrics.memory_usage}
+
+        ## Recent Deployments
+        ${get-recent-deployments.output | format:"markdown"}
+
+        ## Recent Errors
+        ${get-application-logs.output | format:"truncate:1000"}
+
+        ## Recommended Action
+        ${analyze-incident.recommendedAction}
+
+        ---
+        *Incident auto-created by Lobster incident response pipeline*
+      priority: |
+        {% if SEVERITY == "critical" %}CRITICAL{% elsif SEVERITY == "high" %}HIGH{% elsif SEVERITY == "medium" %}MEDIUM{% else %}LOW{% endif %}
+      labels:
+        - automated-incident
+        - "${SERVICE_NAME}"
+        - "${ENVIRONMENT}"
+      customFields:
+        rootCauseComponent: "${analyze-incident.rootCause}"
+    timeout: 30
+    dependsOn:
+      - analyze-incident
+
+  # Step 8: Get on-call engineer
+  # Demonstrates: on-call scheduling integration
+  - id: get-oncall-engineer
+    skill: pagerduty
+    action: get-oncall
+    description: Fetch currently on-call engineer
+    params:
+      schedule: "${SERVICE_NAME}-oncall"
+      include: ["users", "schedules"]
+    timeout: 10
+
+  # Step 9: Notify on-call engineer
+  # Demonstrates: rich Slack notification with context
+  - id: notify-oncall
+    skill: slack
+    action: send
+    description: Send incident alert to on-call engineer
+    params:
+      # DM on-call or post to incident channel
+      channel: "${get-oncall-engineer.email}"
+      fallbackChannel: "#incidents"
+      message: |
+        🚨 INCIDENT: ${SERVICE_NAME} (${SEVERITY})
+
+        **ID:** ${INCIDENT_ID}
+        **Probable Cause:** ${analyze-incident.rootCause}
+        **Error Rate:** ${analyze-incident.errorRate}
+
+        Jira ticket: https://jira.example.com/browse/${create-jira-ticket.key}
+      blocks:
+        - type: header
+          text:
+            type: plain_text
+            text: "🚨 Incident Alert"
+        - type: section
+          fields:
+            - type: mrkdwn
+              text: "*Service:*\n${SERVICE_NAME}"
+            - type: mrkdwn
+              text: "*Severity:*\n${SEVERITY}"
+            - type: mrkdwn
+              text: "*Environment:*\n${ENVIRONMENT}"
+            - type: mrkdwn
+              text: "*ID:*\n${INCIDENT_ID}"
+        - type: section
+          text:
+            type: mrkdwn
+            text: "*Root Cause:* ${analyze-incident.rootCause}"
+        - type: section
+          fields:
+            - type: mrkdwn
+              text: "*Error Rate:* ${analyze-incident.errorRate}"
+            - type: mrkdwn
+              text: "*Latency P95:* ${analyze-incident.latencyP95}"
+        - type: section
+          text:
+            type: mrkdwn
+            text: |
+              *Affected Components:*
+              ${analyze-incident.affectedComponents | map:"- " | join:"\n"}
+        - type: actions
+          elements:
+            - type: button
+              text: "View Logs"
+              url: "https://logs.example.com/query?service=${SERVICE_NAME}&id=${INCIDENT_ID}"
+            - type: button
+              text: "Open Jira Ticket"
+              url: "https://jira.example.com/browse/${create-jira-ticket.key}"
+            - type: button
+              text: "Metrics Dashboard"
+              url: "https://grafana.example.com/d/incidents?var-service=${SERVICE_NAME}"
+    timeout: 20
+    dependsOn:
+      - analyze-incident
+      - create-jira-ticket
+      - get-oncall-engineer
+
+  # Step 10: Create timeline document
+  # Demonstrates: document creation for post-incident review
+  - id: create-timeline-doc
+    skill: notion
+    action: create-page
+    description: Create incident timeline and response log
+    params:
+      parent: "Incident Timeline Database"
+      title: "[${INCIDENT_ID}] ${SERVICE_NAME} Incident"
+      properties:
+        IncidentID: "${INCIDENT_ID}"
+        Service: "${SERVICE_NAME}"
+        Severity: "${SEVERITY}"
+        Environment: "${ENVIRONMENT}"
+        StartTime: "now()"
+        Status: "Ongoing"
+        RootCause: "${analyze-incident.rootCause}"
+      content: |
+        # Incident Timeline
+
+        **Incident ID:** ${INCIDENT_ID}
+        **Service:** ${SERVICE_NAME}
+        **Severity:** ${SEVERITY}
+        **Root Cause:** ${analyze-incident.rootCause}
+
+        ## Timeline
+
+        - **T+0 min** — Incident detected and response initiated
+          - Error Rate: ${analyze-incident.errorRate}
+          - Affected Components: ${analyze-incident.affectedComponents}
+
+        ## Investigation
+
+        ### Health Checks
+        - API Health: ${check-api-health.status}
+        - Database: ${check-database-health.status}
+        - Cache: ${check-cache-health.status}
+
+        ### Recent Changes
+        - Latest Deployment: ${get-recent-deployments.first.ref}
+        - Deployed By: ${get-recent-deployments.first.creator}
+
+        ### Actions Taken
+        (To be updated as incident progresses)
+
+        ## Resolution
+
+        (To be filled in)
+
+        ---
+        Document auto-generated by Lobster • [Jira Ticket](https://jira.example.com/browse/${create-jira-ticket.key})
+    timeout: 15
+    dependsOn:
+      - create-jira-ticket
+      - analyze-incident
+
+  # Step 11: Start post-incident monitoring
+  # Demonstrates: conditional monitoring based on severity
+  - id: enable-monitoring
+    skill: monitoring
+    action: escalate-alerts
+    description: Enable enhanced monitoring for recovery validation
+    condition: "${SEVERITY != 'low'}"
+    params:
+      service: "${SERVICE_NAME}"
+      environment: "${ENVIRONMENT}"
+      alertLevel: elevated
+      checkInterval: 30  # seconds
+      duration: 3600  # 1 hour of enhanced monitoring
+    timeout: 10
+    skipIfConditionFalse: true
+    dependsOn:
+      - notify-oncall
+
+# Error handling - if something fails during incident response
+on_failure:
+  description: Notify team if incident response pipeline fails
+
+  steps:
+    - id: notify-response-failure
+      skill: slack
+      action: send
+      description: Alert team about pipeline failure
+      params:
+        channel: "#incidents"
+        message: |
+          ⚠️ Incident response pipeline failed!
+
+          Service: ${SERVICE_NAME}
+          Incident ID: ${INCIDENT_ID}
+          Failed Step: ${FAILED_STEP}
+          Error: ${FAILURE_REASON}
+
+          Please manually initiate incident response.
+      timeout: 15
+
+config:
+  timeout: 300  # 5 minutes for quick incident response
+  maxConcurrentSteps: 4  # Run health checks in parallel
+  resumable: true
+
+  cache:
+    enabled: false  # Don't cache for incidents - need fresh data
+
+  logging:
+    level: debug  # Verbose logging for incident troubleshooting
+    captureStdout: true
+    captureStderr: true

@@ -1,0 +1,270 @@
+# Deploy and Notify Pipeline
+#
+# This pipeline automates the complete deployment workflow:
+# 1. Build Docker image with specified tag
+# 2. Push image to container registry
+# 3. Apply Kubernetes manifest to staging environment
+# 4. Run smoke tests with exponential backoff retry
+# 5. Notify team on Slack of deployment status
+#
+# On failure, sends alert to team and logs stack trace
+#
+# Environment Variables Required:
+#   - IMAGE_TAG: Docker image tag (e.g., "v1.2.3" or "sha-abc123")
+#   - DOCKER_REGISTRY: Registry URL (default: docker.io)
+#   - SLACK_WEBHOOK: Slack webhook URL for notifications
+#
+# Usage:
+#   openclaw pipeline run deploy-and-notify --env IMAGE_TAG=v1.0.0
+
+name: deploy-and-notify
+description: Build Docker image, deploy to staging, run smoke tests, notify team
+version: "1.0.0"
+
+# Pipeline-level environment variables and defaults
+env:
+  DOCKER_REGISTRY: ${DOCKER_REGISTRY:-docker.io}
+  IMAGE_FULL: "${DOCKER_REGISTRY}/myapp:${IMAGE_TAG}"
+  STAGING_NAMESPACE: staging
+  HEALTH_CHECK_URL: https://staging.example.com/health
+  TEST_TIMEOUT: 300
+
+# Main pipeline steps
+steps:
+  # Step 1: Build Docker image
+  # Demonstrates: skill invocation with parameters, variable interpolation
+  - id: build-image
+    skill: docker-manager
+    action: build
+    description: Build Docker image with tag
+    params:
+      context: "."
+      dockerfile: "Dockerfile"
+      tag: "${IMAGE_FULL}"
+      buildArgs:
+        - "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+        - "VCS_REF=${GIT_SHA:-unknown}"
+    timeout: 600  # 10 minute timeout for build
+
+  # Step 2: Push image to registry
+  # Demonstrates: sequential step dependency, parameter passing
+  - id: push-image
+    skill: docker-manager
+    action: push
+    description: Push built image to container registry
+    params:
+      tag: "${IMAGE_FULL}"
+    timeout: 300
+    # This step runs after build-image completes
+    dependsOn:
+      - build-image
+
+  # Step 3: Deploy to Kubernetes
+  # Demonstrates: manifest-based deployment, namespace management
+  - id: deploy-staging
+    skill: kubernetes
+    action: apply
+    description: Apply Kubernetes manifest to staging environment
+    params:
+      manifest: "k8s/staging.yml"
+      namespace: "${STAGING_NAMESPACE}"
+      # Override image in manifest with our built image
+      imageOverrides:
+        - deployment: myapp
+          image: "${IMAGE_FULL}"
+    timeout: 300
+    dependsOn:
+      - push-image
+
+  # Step 4: Health check with retry
+  # Demonstrates: retry logic with exponential backoff, timeout handling
+  - id: health-check
+    skill: http
+    action: get
+    description: Verify service is healthy after deployment
+    params:
+      url: "${HEALTH_CHECK_URL}"
+      expectedStatus: 200
+      timeout: 10
+    retry:
+      maxAttempts: 5
+      initialDelay: 5s
+      backoffMultiplier: 1.5
+      maxDelay: 30s
+      # Retry on network errors and 5xx responses
+      retryOn:
+        - TIMEOUT
+        - CONNECTION_ERROR
+        - HTTP_5XX
+    timeout: 120  # Overall timeout: 5 retries with delays
+    dependsOn:
+      - deploy-staging
+
+  # Step 5: Run smoke tests
+  # Demonstrates: command execution with environment variables
+  - id: smoke-tests
+    skill: shell
+    action: exec
+    description: Run automated smoke tests against staging
+    params:
+      command: |
+        #!/bin/bash
+        set -e
+        echo "Running smoke tests against ${HEALTH_CHECK_URL}"
+        npm test -- --url "${HEALTH_CHECK_URL}" --timeout ${TEST_TIMEOUT}
+      env:
+        NODE_ENV: staging
+        LOG_LEVEL: debug
+    timeout: 400  # Allow time for npm install + tests
+    dependsOn:
+      - health-check
+
+  # Step 6: Notify team of successful deployment
+  # Demonstrates: conditional success notification, dynamic message composition
+  - id: notify-success
+    skill: slack
+    action: send
+    description: Send success notification to team
+    params:
+      channel: "#deployments"
+      message: |
+        ✅ Deployment Successful
+
+        Image: ${IMAGE_FULL}
+        Environment: staging
+        Deployed at: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+
+        Health Check: Passed
+        Smoke Tests: Passed
+
+        Next: Monitor logs and run integration tests
+      blocks:
+        - type: section
+          text:
+            type: mrkdwn
+            text: "✅ *${IMAGE_TAG}* deployed to staging"
+        - type: section
+          fields:
+            - type: mrkdwn
+              text: "*Image:*\n`${IMAGE_FULL}`"
+            - type: mrkdwn
+              text: "*Status:*\nHealthy"
+        - type: actions
+          elements:
+            - type: button
+              text: "View Logs"
+              url: "https://example.com/logs/staging"
+            - type: button
+              text: "Run Integration Tests"
+              url: "https://example.com/tests"
+    timeout: 30
+    dependsOn:
+      - smoke-tests
+
+# Error handling and failure notifications
+on_failure:
+  description: Handle pipeline failures with alerts and logging
+
+  steps:
+    # Notify on failure
+    - id: notify-failure
+      skill: slack
+      action: send
+      description: Alert team to deployment failure
+      params:
+        channel: "#deployments"
+        threadTs: "${THREAD_TS:-}"  # Continue thread if available
+        message: |
+          ❌ Deployment Failed
+
+          Image: ${IMAGE_FULL}
+          Environment: staging
+          Failed Step: ${FAILED_STEP}
+          Error: ${FAILURE_REASON}
+
+          Please investigate logs and retry manually
+        blocks:
+          - type: section
+            text:
+              type: mrkdwn
+              text: "❌ *Deployment failed* at step `${FAILED_STEP}`"
+          - type: section
+            text:
+              type: mrkdwn
+              text: "*Reason:*\n```${FAILURE_REASON}```"
+          - type: context
+            elements:
+              - type: mrkdwn
+                text: "Image: `${IMAGE_FULL}`"
+      timeout: 30
+
+    # Create incident ticket (optional)
+    - id: create-ticket
+      skill: jira
+      action: create-issue
+      description: Create incident ticket for investigation
+      params:
+        projectKey: OPS
+        issueType: Incident
+        summary: "Deployment failed: ${IMAGE_TAG}"
+        description: |
+          Deployment of ${IMAGE_FULL} to staging failed.
+
+          Failed step: ${FAILED_STEP}
+          Error: ${FAILURE_REASON}
+
+          Please investigate and rerun deployment.
+        priority: HIGH
+        labels:
+          - deployment
+          - staging
+          - automated
+      timeout: 30
+
+    # Log failure details for debugging
+    - id: log-failure
+      skill: shell
+      action: exec
+      description: Capture debug information for investigation
+      params:
+        command: |
+          #!/bin/bash
+          echo "=== Deployment Failure Debug Info ==="
+          echo "Image: ${IMAGE_FULL}"
+          echo "Failed Step: ${FAILED_STEP}"
+          echo "Reason: ${FAILURE_REASON}"
+          echo ""
+          echo "=== Recent Logs ==="
+          kubectl logs -n ${STAGING_NAMESPACE} -l app=myapp --tail=100 || true
+          echo ""
+          echo "=== Pod Status ==="
+          kubectl get pods -n ${STAGING_NAMESPACE} || true
+      timeout: 60
+
+# Pipeline Configuration
+config:
+  # Timeout for entire pipeline (includes retries)
+  timeout: 1200
+
+  # Concurrency settings
+  maxConcurrentSteps: 2
+
+  # Resume configuration (allows resuming from failed step)
+  resumable: true
+  resumeFrom: "${FAILED_STEP}"
+
+  # Caching to optimize token usage
+  cache:
+    enabled: true
+    ttl: 3600  # Cache results for 1 hour
+
+  # Logging configuration
+  logging:
+    level: info
+    captureStdout: true
+    captureStderr: true
+
+  # Notification preferences
+  notifications:
+    slack: true
+    email: false
