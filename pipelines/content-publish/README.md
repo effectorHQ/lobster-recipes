@@ -46,7 +46,7 @@ export CONTENT_URL=https://notion.so/draft-page-id  # Notion page
 export CONTENT_TITLE="My Article Title"
 
 # Publishing accounts
-export TWITTER_ACCOUNT=openclawhq              # Twitter handle
+export TWITTER_ACCOUNT=effectorhq              # Twitter handle
 export SLACK_CHANNEL=#content                  # Slack notification channel
 export EMAIL_RECIPIENT=content-team@example.com
 
@@ -474,4 +474,4 @@ Found issues or have improvements? See [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## License
 
-MIT © 2026 OpenClawHQ Contributors
+MIT © 2026 effectorHQ Contributors

@@ -403,4 +403,4 @@ Found improvements? See [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## License
 
-MIT © 2026 OpenClawHQ Contributors
+MIT © 2026 effectorHQ Contributors

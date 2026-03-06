@@ -2,8 +2,8 @@
 
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Lobster](https://img.shields.io/badge/powered%20by-Lobster-blue.svg)](https://github.com/OpenClawHQ/lobster)
-[![OpenClawHQ](https://img.shields.io/badge/by-OpenClawHQ-black.svg)](https://github.com/OpenClawHQ)
+[![Lobster](https://img.shields.io/badge/powered%20by-Lobster-blue.svg)](https://github.com/effectorHQ/lobster)
+[![effectorHQ](https://img.shields.io/badge/by-effectorHQ-black.svg)](https://github.com/effectorHQ)
 
 **[中文文档 →](./README.zh.md)**
 
@@ -36,7 +36,7 @@ openclaw init
 
 1. Clone or fork this repository:
    ```bash
-   git clone https://github.com/OpenClawHQ/lobster-recipes.git
+   git clone https://github.com/effectorHQ/lobster-recipes.git
    cd lobster-recipes
    ```
 
@@ -91,14 +91,14 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 
 ## License
 
-MIT © 2026 OpenClawHQ Contributors. See [LICENSE](LICENSE) for details.
+MIT © 2026 effectorHQ Contributors. See [LICENSE](LICENSE) for details.
 
 ## Community
 
-- **Issues & Discussions**: [GitHub Issues](https://github.com/OpenClawHQ/lobster-recipes/issues)
+- **Issues & Discussions**: [GitHub Issues](https://github.com/effectorHQ/lobster-recipes/issues)
 - **Slack Community**: [Join OpenClaw Slack](https://openclaw.dev/slack)
-- **Twitter**: [@OpenClawHQ](https://twitter.com/OpenClawHQ)
+- **Twitter**: [@effectorHQ](https://twitter.com/effectorHQ)
 
 ---
 
-**Made with ❤️ by the OpenClawHQ team**
+**Made with ❤️ by the effectorHQ team**

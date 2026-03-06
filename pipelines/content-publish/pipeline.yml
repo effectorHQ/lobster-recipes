@@ -21,7 +21,7 @@ env:
   CONTENT_URL: ${CONTENT_URL}           # Notion page URL or ID
   CONTENT_TITLE: ${CONTENT_TITLE}       # Article title
   PUBLISH_DATE: ${PUBLISH_DATE:-$(date +%Y-%m-%d)}
-  TWITTER_ACCOUNT: ${TWITTER_ACCOUNT:-openclawhq}
+  TWITTER_ACCOUNT: ${TWITTER_ACCOUNT:-effectorhq}
   SLACK_CHANNEL: ${SLACK_CHANNEL:-#content}
 
 steps:

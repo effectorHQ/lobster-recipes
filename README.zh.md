@@ -2,8 +2,8 @@
 
 [![欢迎 PRs](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![许可证：MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Lobster](https://img.shields.io/badge/powered%20by-Lobster-blue.svg)](https://github.com/OpenClawHQ/lobster)
-[![OpenClawHQ](https://img.shields.io/badge/by-OpenClawHQ-black.svg)](https://github.com/OpenClawHQ)
+[![Lobster](https://img.shields.io/badge/powered%20by-Lobster-blue.svg)](https://github.com/effectorHQ/lobster)
+[![effectorHQ](https://img.shields.io/badge/by-effectorHQ-black.svg)](https://github.com/effectorHQ)
 
 **[English Documentation →](./README.md)**
 
@@ -36,7 +36,7 @@ openclaw init
 
 1. 克隆或 Fork 此仓库：
    ```bash
-   git clone https://github.com/OpenClawHQ/lobster-recipes.git
+   git clone https://github.com/effectorHQ/lobster-recipes.git
    cd lobster-recipes
    ```
 
@@ -91,14 +91,14 @@ openclaw init
 
 ## 许可证
 
-MIT © 2026 OpenClawHQ 贡献者。详见 [LICENSE](LICENSE)。
+MIT © 2026 effectorHQ 贡献者。详见 [LICENSE](LICENSE)。
 
 ## 社区
 
-- **问题与讨论**: [GitHub Issues](https://github.com/OpenClawHQ/lobster-recipes/issues)
+- **问题与讨论**: [GitHub Issues](https://github.com/effectorHQ/lobster-recipes/issues)
 - **Slack 社区**: [加入 OpenClaw Slack](https://openclaw.dev/slack)
-- **Twitter**: [@OpenClawHQ](https://twitter.com/OpenClawHQ)
+- **Twitter**: [@effectorHQ](https://twitter.com/effectorHQ)
 
 ---
 
-**由 OpenClawHQ 团队用❤️制作**
+**由 effectorHQ 团队用❤️制作**
