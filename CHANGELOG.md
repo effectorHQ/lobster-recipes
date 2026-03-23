@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **incident-response** pipeline: Incident handling automation with service health checks, log aggregation, deployment history, Jira ticket creation, and on-call notifications
 - **content-publish** pipeline: Content publishing workflow from Notion drafts through spell checking, social media snippet generation, tweet scheduling, and changelog updates
 - Comprehensive documentation and README in English and Chinese
-- MIT License
+- Apache License 2.0
 - Contributing guidelines template
 
 ### Features Demonstrated

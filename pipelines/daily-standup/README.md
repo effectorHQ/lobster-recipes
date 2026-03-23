@@ -371,4 +371,6 @@ Found an issue or want improvements? See [CONTRIBUTING.md](../../CONTRIBUTING.md
 
 ## License
 
-MIT © 2026 effectorHQ Contributors
+
+This project is currently licensed under the Apache 2.0 License 。
+

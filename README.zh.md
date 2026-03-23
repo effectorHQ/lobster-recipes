@@ -1,7 +1,7 @@
 # Lobster 食谱库
 
 [![欢迎 PRs](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![许可证：MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![许可证：Apache 2.0](https://img.shields.io/badge/License-Apache-2.0-yellow.svg)](LICENSE)
 [![Lobster](https://img.shields.io/badge/powered%20by-Lobster-blue.svg)](https://github.com/effectorHQ/lobster)
 [![effectorHQ](https://img.shields.io/badge/by-effectorHQ-black.svg)](https://github.com/effectorHQ)
 
@@ -91,7 +91,7 @@ openclaw init
 
 ## 许可证
 
-MIT © 2026 effectorHQ 贡献者。详见 [LICENSE](LICENSE)。
+This project is currently licensed under the Apache 2.0 License 。
 
 ## 社区
 
