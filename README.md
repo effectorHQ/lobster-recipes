@@ -1,7 +1,7 @@
 # Lobster Recipes
 
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache-2.0-yellow.svg)](LICENSE)
+
 [![Lobster](https://img.shields.io/badge/powered%20by-Lobster-blue.svg)](https://github.com/effectorHQ/lobster)
 [![effectorHQ](https://img.shields.io/badge/by-effectorHQ-black.svg)](https://github.com/effectorHQ)
 
@@ -91,8 +91,7 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 
 ## License
 
-
-This project is currently licensed under the Apache 2.0 License 。
+This project is currently licensed under the [Apache License, Version 2.0](LICENSE.md) 。
 
 ## Community
 

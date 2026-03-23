@@ -371,6 +371,5 @@ Found an issue or want improvements? See [CONTRIBUTING.md](../../CONTRIBUTING.md
 
 ## License
 
-
-This project is currently licensed under the Apache 2.0 License 。
+This project is currently licensed under the [Apache License, Version 2.0](../../LICENSE.md) 。
 
